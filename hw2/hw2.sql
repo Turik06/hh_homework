@@ -16,34 +16,107 @@ SET search_path TO hh_school;
 -- ============================================================
 
 -- ЗАДАНИЕ 1.
--- Запрос 1
+-- ДОРАБОТКА.
 
-                                                                                  
+-- 1. Пропуски в calls:
+    SELECT
+        count(*) AS total,
+        count(response_id) AS resp_id,
+        count(call_duration) AS duration
+    FROM calls;
+
+-- 2. Звонки без отклика:
     SELECT 
-        'calls: missing response_id' AS problem_type,
-        count(*) AS rows_count,
-        array_agg(call_id ORDER BY call_id) AS problem_ids
+        call_id, 
+        status, 
+        call_duration, 
+        call_at
     FROM calls
     WHERE response_id IS NULL
-  
-    UNION ALL
-  
+    ORDER BY call_id;
+
+-- 3. Звонок со статусом error:
     SELECT 
-        'calls: technical error' AS problem_type,
-        count(*) AS rows_count,
-        array_agg(call_id ORDER BY call_id) AS problem_ids
+        call_id, 
+        status, 
+        call_at
     FROM calls
     WHERE status = 'error';
 
--- Запрос 2: 
+-- 4. Пропуски в messages:
+    SELECT
+        count(*) AS total,
+        count(response_id) AS resp_id,
+        count(sent_at) AS sent_at,
+        count(message_text) AS text_cnt
+    FROM messages;
 
+-- 5. Пустые сообщения:
+    SELECT 
+        sender_role, 
+        count(*) AS empty_cnt
+    FROM messages
+    WHERE message_text IS NULL OR btrim(message_text) = ''
+    GROUP BY sender_role;
+
+-- 6. События раньше отклика:
+    SELECT 
+        'calls' AS tbl, 
+        count(*) AS cnt
+    FROM calls c
+    JOIN responses r ON c.response_id = r.response_id
+    WHERE c.call_at < r.created_at
+    UNION ALL
+    SELECT 
+        'messages', 
+        count(*)
+    FROM messages m
+    JOIN responses r ON m.response_id = r.response_id
+    WHERE m.sent_at < r.created_at;
+
+-- 7. Несовпадение ID с откликом:
+    SELECT 
+        'calls' AS tbl, 
+        count(*) AS cnt
+    FROM calls c
+    JOIN responses r ON c.response_id = r.response_id
+    WHERE c.applicant_id <> r.resume_id OR c.vacancy_id <> r.vacancy_id
+    UNION ALL
+    SELECT 
+        'messages', 
+        count(*)
+    FROM messages m
+    JOIN responses r ON m.response_id = r.response_id
+    WHERE m.applicant_id <> r.resume_id OR m.vacancy_id <> r.vacancy_id;
+
+-- 8. Дубликаты:
+    SELECT 
+        'calls' AS tbl, 
+        count(*) AS cnt
+    FROM (
+        SELECT response_id, call_at, caller_role, count(*)
+        FROM calls 
+        WHERE response_id IS NOT NULL
+        GROUP BY response_id, call_at, caller_role 
+        HAVING count(*) > 1
+    ) s
+    UNION ALL
+    SELECT 
+        'messages', 
+        count(*)
+    FROM (
+        SELECT response_id, sent_at, sender_role, count(*)
+        FROM messages
+        GROUP BY response_id, sent_at, sender_role 
+        HAVING count(*) > 1
+    ) s;
+
+-- Расчет длительности звонков:
     WITH stats AS (
         SELECT 
             round(avg(call_duration)::numeric, 2) AS avg_duration,
-            percentile_cont(0.5) WITHIN GROUP (ORDER BY call_duration) AS        
-  p50_duration,
-            percentile_cont(0.99) WITHIN GROUP (ORDER BY call_duration) AS       
-  p99_duration
+            percentile_cont(0.5) WITHIN GROUP (ORDER BY call_duration) AS p50_duration,
+            percentile_cont(0.99) WITHIN GROUP (ORDER BY call_duration) AS p99_duration
         FROM calls
         WHERE status = 'successful'
     )
@@ -51,37 +124,32 @@ SET search_path TO hh_school;
         s.avg_duration,
         s.p50_duration,
         s.p99_duration,
-        count(c.call_id) FILTER (WHERE c.call_duration > s.p99_duration) AS      
-  count_above_p99,
-        round(avg(c.call_duration) FILTER (WHERE c.call_duration <= s.           
-  p99_duration)::numeric, 2) AS avg_excl_p99
+        count(c.call_id) FILTER (WHERE c.call_duration > s.p99_duration) AS count_above_p99,
+        round(avg(c.call_duration) FILTER (WHERE c.call_duration <= s.p99_duration)::numeric, 2) AS avg_excl_p99
     FROM calls c
     CROSS JOIN stats s
     WHERE c.status = 'successful'
     GROUP BY s.avg_duration, s.p50_duration, s.p99_duration;
-    
 
+-- ДОРАБОТКА.
 -- Итоговые значения:
--- • Средняя длительность: 467.28 сек
--- • Медиана (p50):  438 сек
--- • 99-й перцентиль (p99): 890.4
--- • Количество звонков > p99: 2
--- • Средняя длительность без выбросов (> p99): 462.49 сек
+-- Средняя длительность: 467.28 сек
+-- Медиана (p50): 438 сек
+-- 99-й перцентиль (p99): 890.4 сек
+-- Звонков выше p99: 2 шт (id: 700159 - 892 сек, 700199 - 899 сек)
+-- Средняя длительность без выбросов: 462.49 сек
 
 -- Вывод:
-
--- 1. В таблице calls найдено 8 звонков без response_id 
---    и 1 звонок со статусом error. Эти записи влияют 
---    на факт коммуникации и поэтому их нужно исключить из построения истории откликов 
-
---    В таблице messages аномалий и пропусков нет.
-    
--- 2. Звонки длительностью 892 и 899 сек считаю 
---    допустимыми выбросами, а не ошибками, например, 
---    первичное интервью вполне может занимать столько времени.          
-    
--- 3. Для оценки типичной длительности звонка рекомендую использовать медиану
---    так как она устойчива к подобным длинным разговорам в отличие от среднего арифметического.
+-- 1. В таблице calls:
+--    - 8 звонков без response_id (номера 700244, 700245, 700246, 700247, 700248, 700249, 700250, 700251). Непонятно, к какому отклику они относятся, поэтому исключаем их из анализа откликов.
+--    - 1 звонок со статусом error (id 700163). Это сбой, разговора не было, тоже исключаем.
+--    - 70 звонков без длительности (69 unsuccessful и 1 error). Это нормально: раз звонок не состоялся, длительности и нет.
+-- 2. В таблице messages проблем нет:
+--    - Все 2862 строки заполнены без пропусков и привязаны к откликам.
+--    - Нет пустых текстов, нет сообщений раньше отклика, нет нестыковок по id и дублей.
+-- 3. Выбросы длительности:
+--    - Звонки по 892 и 899 сек считаю нормальными, а не ошибками: разговор на 15 минут вполне возможен при интервью.
+--    - Для типичной длительности лучше брать медиану (438 сек), так как она устойчива к длинным разговорам.
 
 
 -- ============================================================
@@ -411,10 +479,18 @@ SET search_path TO hh_school;
     WHERE rank_place <= 2
     ORDER BY professional_role, rank_place, employer_id;
                                                                                                                                                   
+-- ДОРАБОТКА.
+-- Контрольные значения (professional_role | место | employer_id):
+-- Аналитик данных: 1 место - работодатель 109, 2 место - работодатель 103
+-- Дата-инженер: 1 место - работодатель 106, 2 место - работодатель 101
+-- Продуктовый аналитик: 1 место - работодатель 103, 2 место - работодатель 102
+-- Разработчик: 1 место - работодатель 112, 2 место - работодатель 104
+-- Тестировщик: 1 место - работодатель 107, 2 место - работодатель 108
+
 -- Вывод:
--- 1. Лучше всего компании разбирают отклики на аналитиков данных и тестировщиков 85-89%, а хуже всего - на дата-инженеров 46%.           
--- 2. Большинство работодателей связываются долго, где-то через 50-75 ч, хотя есть случаи которые отвечают за 6–10 часов.
--- 3. Приглашения чаще всего получают тестировщики, при этом быстрый контакт сам по себе не гарантирует приглашение.
+-- 1. Лучше всего компании разбирают отклики на аналитиков данных и тестировщиков (85-89%), а хуже всего - на дата-инженеров (46%).
+-- 2. Скорость первого контакта не всегда идет вместе с долей ответов: например, компании 108 и 106 отвечают очень быстро (медиана 6-10 ч), но разбирают меньшую часть откликов, поэтому по правилам рейтинга они ниже.
+-- 3. Чаще всего приглашают тестировщиков (конверсия 37-41%), у остальных направлений она около 10-20%. Быстрый ответ сам по себе не гарантирует приглашение.
 
 
 
@@ -554,14 +630,30 @@ SET search_path TO hh_school;
     ORDER BY total_messages DESC;
 
                                                                                                                                                       
--- Контрольные значения 6.2:                                                                                                                        
--- web: всего сообщений 628, статус прочтения известен у 628, непрочитанных 52, с вложениями 25                                   
--- mobile_app: всего сообщений 360, статус прочтения известен у 360, непрочитанных 36, с вложениями 14         
-                                                                                                                                        
+-- ДОРАБОТКА.
+-- Контрольные значения 6.2 по каналам:
+-- web:
+--   всего сообщений: 628
+--   с известным статусом прочтения: 628
+--   непрочитанных: 52
+--   доля непрочитанных: 8.28%
+--   с вложениями: 25
+--   доля с вложениями: 3.98%
+-- mobile_app:
+--   всего сообщений: 360
+--   с известным статусом прочтения: 360
+--   непрочитанных: 36
+--   доля непрочитанных: 10.00%
+--   с вложениями: 14
+--   доля с вложениями: 3.89%
+-- Группа без указания канала: 0 сообщений (пусто).
+
 -- Вывод:
 -- 1. В звонках ошибок нет, технические теги везде сходятся со статусом звонка. По целям всё распределено равномерно.
 --    Чаще всего звонят по поводу интервью 31. В каждом звонке ровно 4 тега.
--- 2. Пишут работодатели в основном с сайта, а не через приложение. Сообщения кандидаты читают почти всегда, а файлы прикрепляют редко.
+-- 2. Работодатели чаще пишут через сайт, чем через мобильное приложение (628 сообщений против 360).
+-- 3. Кандидаты читают почти все сообщения (непрочитанных всего 8-10%).
+-- 4. Файлы и вложения прикрепляют редко в обоих каналах (около 4%).
 
 -- ============================================================
 -- БЛОК Д
